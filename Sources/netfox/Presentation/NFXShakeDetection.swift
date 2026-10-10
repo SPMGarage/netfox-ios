@@ -1,50 +1,29 @@
 //
-//  NFXHelper.swift
+//  NFXShakeDetection.swift
 //  netfox
 //
-//  Copyright © 2016 netfox. All rights reserved.
+//  Shake gesture detection through a UIWindow override.
 //
 
 #if os(iOS)
-
 import UIKit
 
-// Shake gesture detection via UIWindow override
 extension UIWindow {
+    // P2-11: the event always continues up the responder chain (super), and netfox
+    // reacts only when it is started and the gesture is .shake.
     override open func motionEnded(_ motion: UIEvent.EventSubtype, with event: UIEvent?) {
-        if NFX.sharedInstance().getSelectedGesture() == .shake {
-            if event?.type == .motion && event?.subtype == .motionShake {
-                NFX.sharedInstance().motionDetected()
-            }
-        } else {
-            super.motionEnded(motion, with: event)
+        if motion == .motionShake {
+            NFXShakeHandler.handleShake()
         }
+        super.motionEnded(motion, with: event)
     }
 }
 
-// MARK: - Data Cleaner Protocol
-
-protocol DataCleaner {
-    func clearData(sourceView: UIView, originingIn sourceRect: CGRect?, then: @escaping () -> Void)
-}
-
-extension DataCleaner where Self: UIViewController {
-    func clearData(sourceView: UIView, originingIn sourceRect: CGRect?, then: @escaping () -> Void) {
-        let actionSheet = UIAlertController(title: "Clear data?", message: nil, preferredStyle: .actionSheet)
-        actionSheet.popoverPresentationController?.sourceView = sourceView
-        if let sourceRect = sourceRect {
-            actionSheet.popoverPresentationController?.sourceRect = sourceRect
-        }
-
-        actionSheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-
-        actionSheet.addAction(UIAlertAction(title: "Clear All", style: .destructive) { _ in
-            NFX.sharedInstance().clearOldData()
-            then()
-        })
-
-        present(actionSheet, animated: true)
+enum NFXShakeHandler {
+    static func handleShake() {
+        let nfx = NFX.shared
+        guard nfx.isStarted(), nfx.selectedGesture == .shake else { return }
+        NFXPresenter.shared.toggle()
     }
 }
-
 #endif

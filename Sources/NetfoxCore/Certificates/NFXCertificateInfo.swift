@@ -2,149 +2,117 @@
 //  NFXCertificateInfo.swift
 //  netfox
 //
-//  D6: TLS certificate info capture and storage.
-//  Uses associated objects on NFXHTTPModel to avoid modifying the @objc model.
+//  D6: TLS certificate details of an HTTPS request, captured from the server
+//  trust challenge of the internal session.
 //
-
-#if os(iOS)
 
 import Foundation
 import Security
 
-// MARK: - Certificate Info Model
+/// The server certificate of one HTTPS request. Dates are stored as `Date`; the UI formats them.
+package struct NFXCertificateInfo: Sendable, Hashable {
+    package let subjectSummary: String
+    package let issuerSummary: String
+    package let notValidBefore: Date?
+    package let notValidAfter: Date?
+    /// For example "RSA 2048-bit" or "ECDSA 256-bit".
+    package let publicKeyDescription: String
+    package let isSelfSigned: Bool
+    package let chainLength: Int
 
-struct NFXCertificateInfo {
-    let subject: String
-    let issuer: String
-    let expiryDate: String
-    let publicKeyAlgorithm: String
-    let isSelfSigned: Bool
-    let chainLength: Int
+    package init(
+        subjectSummary: String,
+        issuerSummary: String,
+        notValidBefore: Date?,
+        notValidAfter: Date?,
+        publicKeyDescription: String,
+        isSelfSigned: Bool,
+        chainLength: Int
+    ) {
+        self.subjectSummary = subjectSummary
+        self.issuerSummary = issuerSummary
+        self.notValidBefore = notValidBefore
+        self.notValidAfter = notValidAfter
+        self.publicKeyDescription = publicKeyDescription
+        self.isSelfSigned = isSelfSigned
+        self.chainLength = chainLength
+    }
 
-    init(from serverTrust: SecTrust) {
-        let certCount = SecTrustGetCertificateCount(serverTrust)
+    /// Reads the chain of a server trust (leaf first). nil when the trust has no certificates.
+    package init?(trust: SecTrust) {
+        let chain = (SecTrustCopyCertificateChain(trust) as? [SecCertificate]) ?? []
+        self.init(chain: chain)
+    }
 
-        // Build cert chain using iOS 15-compatible API
-        var chain = [SecCertificate]()
-        for i in 0..<certCount {
-            if let cert = SecTrustGetCertificateAtIndex(serverTrust, i) {
-                chain.append(cert)
-            }
-        }
-
-        guard let leafCert = chain.first else {
-            self.subject = "Unknown"
-            self.issuer = "Unknown"
-            self.expiryDate = "Unknown"
-            self.publicKeyAlgorithm = "Unknown"
-            self.isSelfSigned = false
-            self.chainLength = 0
-            return
-        }
-
-        self.chainLength = certCount
-
-        // Subject from leaf certificate
-        let summary = SecCertificateCopySubjectSummary(leafCert) as String? ?? "Unknown"
-        self.subject = summary
-
-        // Issuer from second cert in chain (the CA that signed the leaf)
+    /// Builds the info from a certificate chain, leaf first.
+    package init?(chain: [SecCertificate]) {
+        guard let leaf = chain.first else { return nil }
+        let subject = SecCertificateCopySubjectSummary(leaf) as String? ?? "Unknown"
+        let selfSigned = Self.isSelfSigned(leaf)
+        let issuer: String
         if chain.count > 1 {
-            let issuerCert = chain[1]
-            self.issuer = SecCertificateCopySubjectSummary(issuerCert) as String? ?? "Unknown"
+            issuer = SecCertificateCopySubjectSummary(chain[1]) as String? ?? "Unknown"
         } else {
-            self.issuer = summary // self-signed
+            issuer = selfSigned ? subject : "Unknown"
         }
-
-        // Public key info
-        if let publicKey = SecCertificateCopyKey(leafCert) {
-            let keyAttrs = SecKeyCopyAttributes(publicKey) as? [String: Any]
-            let keyType = keyAttrs?[kSecAttrKeyType as String] as? String ?? ""
-            let keySize = keyAttrs?[kSecAttrKeySizeInBits as String] as? Int ?? 0
-
-            let algorithm: String
-            if keyType.contains("RSA") || keyType == (kSecAttrKeyTypeRSA as String) {
-                algorithm = "RSA \(keySize)-bit"
-            } else if keyType.contains("EC") || keyType == (kSecAttrKeyTypeECSECPrimeRandom as String) {
-                algorithm = "ECDSA \(keySize)-bit"
-            } else if keySize > 0 {
-                algorithm = "\(keySize)-bit"
-            } else {
-                algorithm = "Unknown"
-            }
-            self.publicKeyAlgorithm = algorithm
-        } else {
-            self.publicKeyAlgorithm = "Unknown"
-        }
-
-        // Expiry: parse from DER data (best effort)
-        // iOS doesn't expose cert dates directly — use the certificate's DER data
-        let derData = SecCertificateCopyData(leafCert) as Data
-        self.expiryDate = NFXCertificateInfo.parseExpiryFromDER(derData) ?? "N/A"
-
-        // Self-signed: only one cert in chain
-        self.isSelfSigned = (certCount == 1)
+        let validity = Self.validity(of: leaf)
+        self.init(
+            subjectSummary: subject,
+            issuerSummary: issuer,
+            notValidBefore: validity.notBefore,
+            notValidAfter: validity.notAfter,
+            publicKeyDescription: Self.publicKeyDescription(of: leaf),
+            isSelfSigned: selfSigned,
+            chainLength: chain.count
+        )
     }
 
-    // Best-effort expiry date extraction from X.509 DER-encoded certificate
-    // Looks for the ASN.1 UTCTime or GeneralizedTime pattern
-    private static func parseExpiryFromDER(_ data: Data) -> String? {
-        let bytes = [UInt8](data)
-        // Find the second time value in the TBS certificate (validity: notBefore, notAfter)
-        var timeCount = 0
-        var i = 0
-        while i < bytes.count - 2 {
-            // UTCTime tag = 0x17, GeneralizedTime tag = 0x18
-            if bytes[i] == 0x17 || bytes[i] == 0x18 {
-                let isUTC = bytes[i] == 0x17
-                let length = Int(bytes[i + 1])
-                if length > 0 && i + 2 + length <= bytes.count {
-                    timeCount += 1
-                    if timeCount == 2 { // second time = notAfter
-                        let timeData = Data(bytes[(i + 2)..<(i + 2 + length)])
-                        if let timeString = String(data: timeData, encoding: .ascii) {
-                            return formatCertDate(timeString, isUTC: isUTC)
-                        }
-                    }
-                }
+    // MARK: - Helpers
+
+    /// Validity dates: the Security API on iOS 18 / macOS 15, the DER walk below that.
+    package static func validity(of certificate: SecCertificate) -> (notBefore: Date?, notAfter: Date?) {
+        if #available(iOS 18.0, macOS 15.0, *) {
+            let notBefore = SecCertificateCopyNotValidBeforeDate(certificate) as Date?
+            let notAfter = SecCertificateCopyNotValidAfterDate(certificate) as Date?
+            if notBefore != nil || notAfter != nil {
+                return (notBefore, notAfter)
             }
-            i += 1
         }
-        return nil
+        let der = SecCertificateCopyData(certificate) as Data
+        let validity = NFXDERParser.validity(ofCertificate: der)
+        return (validity?.notBefore, validity?.notAfter)
     }
 
-    private static func formatCertDate(_ raw: String, isUTC: Bool) -> String? {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
+    /// Self-signed when the normalized issuer equals the normalized subject.
+    package static func isSelfSigned(_ certificate: SecCertificate) -> Bool {
+        guard let issuer = SecCertificateCopyNormalizedIssuerSequence(certificate) as Data?,
+              let subject = SecCertificateCopyNormalizedSubjectSequence(certificate) as Data? else {
+            return false
+        }
+        return issuer == subject
+    }
 
-        if isUTC {
-            // UTCTime: YYMMDDHHMMSSZ
-            formatter.dateFormat = "yyMMddHHmmss'Z'"
+    /// "RSA 2048-bit", "ECDSA 256-bit", or "Unknown".
+    package static func publicKeyDescription(of certificate: SecCertificate) -> String {
+        guard let key = SecCertificateCopyKey(certificate),
+              let attributes = SecKeyCopyAttributes(key) as? [String: Any] else {
+            return "Unknown"
+        }
+        let type = attributes[kSecAttrKeyType as String] as? String ?? ""
+        let bits = (attributes[kSecAttrKeySizeInBits as String] as? NSNumber)?.intValue ?? 0
+        let algorithm: String?
+        if type == (kSecAttrKeyTypeRSA as String) {
+            algorithm = "RSA"
+        } else if type == (kSecAttrKeyTypeECSECPrimeRandom as String) || type == (kSecAttrKeyTypeEC as String) {
+            algorithm = "ECDSA"
         } else {
-            // GeneralizedTime: YYYYMMDDHHMMSSZ
-            formatter.dateFormat = "yyyyMMddHHmmss'Z'"
+            algorithm = nil
         }
-        formatter.timeZone = TimeZone(identifier: "UTC")
-
-        if let date = formatter.date(from: raw) {
-            let display = DateFormatter()
-            display.dateStyle = .medium
-            display.timeStyle = .short
-            return display.string(from: date)
+        switch (algorithm, bits) {
+        case let (algorithm?, bits) where bits > 0: return "\(algorithm) \(bits)-bit"
+        case let (algorithm?, _): return algorithm
+        case let (nil, bits) where bits > 0: return "\(bits)-bit"
+        default: return "Unknown"
         }
-        return raw
     }
 }
-
-// MARK: - Associated Object on NFXHTTPModel
-
-private var certificateInfoKey: UInt8 = 0
-
-extension NFXHTTPModel {
-    var certificateInfo: NFXCertificateInfo? {
-        get { objc_getAssociatedObject(self, &certificateInfoKey) as? NFXCertificateInfo }
-        set { objc_setAssociatedObject(self, &certificateInfoKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC) }
-    }
-}
-
-#endif

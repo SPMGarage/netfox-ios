@@ -4,338 +4,223 @@
 //
 //  Copyright © 2016 netfox. All rights reserved.
 //
+//  The public entry point. Every method is safe to call from any thread:
+//  state sits behind a lock, and UI work hops to the main actor.
+//
 
 import Foundation
-#if os(OSX)
-import Cocoa
-#else
+import NetfoxCore
+import os
+#if os(iOS)
 import UIKit
-import SwiftUI
 #endif
 
-private func podPlistVersion() -> String? {
-    guard let version = Bundle(identifier: "uz.azimjondevuz.netfox-ios")?.infoDictionary?["CFBundleShortVersionString"] as? String else {
-        return nil
-    }
-    return version
-}
-
-let nfxVersion = podPlistVersion() ?? "0"
-
+/// netfox: captures every HTTP(S) request of the app and shows them in an in-app inspector.
+///
+/// ```swift
+/// NFX.shared.start()   // from the app delegate or App.init
+/// NFX.shared.show()    // or shake the device
+/// ```
+///
+/// All methods are thread-safe. `show()`, `hide()` and `toggle()` run on the
+/// main thread: synchronously when called there, otherwise on its next turn.
 @objc
-open class NFX: NSObject {
+public nonisolated final class NFX: NSObject, Sendable {
 
-    // MARK: - Properties
-
-    #if os(OSX)
-    var windowController: NSWindowController?
-    let mainMenu: NSMenu? = NSApp.mainMenu?.items[1].submenu
-    var nfxMenuItem: NSMenuItem = NSMenuItem(
-        title: "netfox",
-        action: #selector(NFX.show),
-        keyEquivalent: String(describing: (character: NSF9FunctionKey, length: 1))
-    )
-    #endif
-
-    #if os(iOS)
-    fileprivate var navigationViewController: UINavigationController?
-    #endif
-
-    fileprivate enum Constants: String {
-        case alreadyStartedMessage = "Already started!"
-        case alreadyStoppedMessage = "Already stopped!"
-        case startedMessage = "Started!"
-        case stoppedMessage = "Stopped!"
-        case nibName = "NetfoxWindow"
-    }
-
-    fileprivate var started: Bool = false
-    fileprivate var presented: Bool = false
-    fileprivate var enabled: Bool = false
-    fileprivate var selectedGesture: ENFXGesture = .shake
-    fileprivate var ignoredURLs = [String]()
-    fileprivate var ignoredURLsRegex = [NSRegularExpression]()
-    fileprivate var lastVisitDate: Date = Date()
-
-    internal var cacheStoragePolicy = URLCache.StoragePolicy.notAllowed
-
-    // swiftSharedInstance is not accessible from ObjC
-    class var swiftSharedInstance: NFX {
-        struct Singleton {
-            static let instance = NFX()
-        }
-        return Singleton.instance
-    }
-
-    // the sharedInstance class method can be reached from ObjC
-    @objc open class func sharedInstance() -> NFX {
-        return NFX.swiftSharedInstance
-    }
-
-    @objc public enum ENFXGesture: Int {
+    /// How the inspector is opened.
+    @objc
+    public enum ENFXGesture: Int, Sendable {
+        /// Shaking the device toggles the inspector.
         case shake
+        /// Only `show()`, `hide()` and `toggle()` open and close it.
         case custom
     }
 
-    @objc open func start() {
-        guard !started else {
-            showMessage(Constants.alreadyStartedMessage.rawValue)
+    private struct State: Sendable {
+        var isStarted = false
+        var gesture = ENFXGesture.shake
+    }
+
+    /// The shared instance.
+    @objc public static let shared = NFX()
+
+    /// The netfox release, e.g. "4.0.0".
+    public static let version = NFXBuildInfo.version
+
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    override private init() {
+        super.init()
+    }
+
+    /// The shared instance, for Objective-C and 3.x callers.
+    @objc
+    public static func sharedInstance() -> NFX {
+        shared
+    }
+
+    // MARK: - Lifecycle
+
+    /// Starts capturing requests: registers the URL protocol, hooks every
+    /// `URLSessionConfiguration` and clears data from a previous run.
+    @objc
+    public func start() {
+        let wasStarted = state.withLock { state in
+            defer { state.isStarted = true }
+            return state.isStarted
+        }
+        guard !wasStarted else {
+            NFXLog.lifecycle.notice("netfox \(Self.version, privacy: .public) is already started")
             return
         }
-
-        started = true
-        // Register first — catches URLSession.shared immediately
-        register()
-        // Swizzle configuration getters — catches future URLSession instances
-        URLSessionConfiguration.implementNetfox()
-        enable()
-        fileStorageInit()
-        showMessage(Constants.startedMessage.rawValue)
-        #if os(OSX)
-        addNetfoxToMainMenu()
-        #endif
+        NFXMainFeed.connect()
+        NFXMainFeed.send(.resetRecords)
+        NFXInterception.start()
+        NFXLog.lifecycle.notice("netfox \(Self.version, privacy: .public) started")
     }
 
-    @objc open func stop() {
-        guard started else {
-            showMessage(Constants.alreadyStoppedMessage.rawValue)
+    /// Stops capturing and deletes the captured data.
+    @objc
+    public func stop() {
+        let wasStarted = state.withLock { state in
+            defer { state.isStarted = false }
+            return state.isStarted
+        }
+        guard wasStarted else {
+            NFXLog.lifecycle.notice("netfox \(Self.version, privacy: .public) is already stopped")
             return
         }
+        NFXInterception.stop()
+        NFXMainFeed.send(.resetRecords)
+        NFXLog.lifecycle.notice("netfox \(Self.version, privacy: .public) stopped")
+    }
 
-        unregister()
-        disable()
-        clearOldData()
-        started = false
-        showMessage(Constants.stoppedMessage.rawValue)
-        #if os(OSX)
-        removeNetfoxFromMainmenu()
+    /// Whether `start()` was called (and `stop()` was not called since).
+    @objc
+    public func isStarted() -> Bool {
+        state.withLock { $0.isStarted }
+    }
+
+    // MARK: - Configuration
+
+    /// The cache storage policy reported for captured responses. Default: `.notAllowed`.
+    @objc
+    public func setCachePolicy(_ policy: URLCache.StoragePolicy) {
+        NFXInterceptionSettings.shared.cachePolicy = policy
+    }
+
+    /// Chooses how the inspector opens. Default: `.shake`.
+    @objc
+    public func setGesture(_ gesture: ENFXGesture) {
+        state.withLock { $0.gesture = gesture }
+    }
+
+    /// Skips requests whose URL starts with `url`.
+    @objc
+    public func ignoreURL(_ url: String) {
+        NFXInterceptionSettings.shared.addIgnoredPrefixes([url])
+    }
+
+    /// Skips requests whose URL starts with any of `urls`.
+    @objc
+    public func ignoreURLs(_ urls: [String]) {
+        NFXInterceptionSettings.shared.addIgnoredPrefixes(urls)
+    }
+
+    /// Skips requests whose URL matches the regular expression. An invalid pattern is logged and ignored.
+    @objc
+    public func ignoreURLsWithRegex(_ regex: String) {
+        NFXInterceptionSettings.shared.addIgnoredPatterns([regex])
+    }
+
+    /// Skips requests whose URL matches any of the regular expressions. Invalid patterns are logged and ignored.
+    @objc
+    public func ignoreURLsWithRegexes(_ regexes: [String]) {
+        NFXInterceptionSettings.shared.addIgnoredPatterns(regexes)
+    }
+
+    /// The plain-text log of this session's requests, or nil when nothing was captured yet.
+    @objc
+    public func getSessionLog() -> Data? {
+        NFXStorage.shared.sessionLogSynchronously()
+    }
+
+    // MARK: - Inspector
+
+    /// Opens the inspector on top of the key window. Does nothing before `start()` or on macOS.
+    @objc
+    public func show() {
+        guard isStarted() else { return }
+        #if os(iOS)
+        Self.onMain { NFXPresenter.shared.show() }
         #endif
     }
 
-    fileprivate func showMessage(_ msg: String) {
-        print("netfox \(nfxVersion) - [https://github.com/azimxxm/netfox-ios]: \(msg)")
-    }
-
-    internal func isEnabled() -> Bool {
-        return enabled
-    }
-
-    internal func enable() {
-        enabled = true
-    }
-
-    internal func disable() {
-        enabled = false
-    }
-
-    fileprivate func register() {
-        URLProtocol.registerClass(NFXProtocol.self)
-    }
-
-    fileprivate func unregister() {
-        URLProtocol.unregisterClass(NFXProtocol.self)
-    }
-
-    @objc func motionDetected() {
-        guard started else { return }
-        toggleNFX()
-    }
-
-    @objc open func isStarted() -> Bool {
-        return started
-    }
-
-    @objc open func setCachePolicy(_ policy: URLCache.StoragePolicy) {
-        cacheStoragePolicy = policy
-    }
-
-    @objc open func setGesture(_ gesture: ENFXGesture) {
-        selectedGesture = gesture
-        #if os(OSX)
-        if gesture == .shake {
-            addNetfoxToMainMenu()
-        } else {
-            removeNetfoxFromMainmenu()
-        }
+    /// Closes the inspector.
+    @objc
+    public func hide() {
+        #if os(iOS)
+        Self.onMain { NFXPresenter.shared.hide() }
         #endif
     }
 
-    @objc open func show() {
-        guard started else { return }
-        showNFX()
+    /// Opens the inspector, or closes it when it is open.
+    @objc
+    public func toggle() {
+        guard isStarted() else { return }
+        #if os(iOS)
+        Self.onMain { NFXPresenter.shared.toggle() }
+        #endif
     }
 
     #if os(iOS)
-    @objc open func show(on rootViewController: UIViewController) {
-        guard started, !presented else { return }
-        showNFX(on: rootViewController)
-        presented = true
+    /// Opens the inspector from `rootViewController`, which must be in a window.
+    @MainActor
+    @objc
+    public func show(on rootViewController: UIViewController) {
+        guard isStarted() else { return }
+        NFXPresenter.shared.show(on: rootViewController)
     }
     #endif
 
-    @objc open func hide() {
-        guard started else { return }
-        hideNFX()
+    // MARK: - WebSocket logging (B8)
+
+    /// Logs a text WebSocket message. Call it from any thread, e.g. from a
+    /// `URLSessionWebSocketTask.receive()` loop.
+    public func logWebSocketText(_ text: String, direction: NFXWebSocketDirection, url: URL) {
+        NFXMainFeed.send(.webSocket(.text(text, direction: direction), url))
     }
 
-    @objc open func toggle() {
-        guard started else { return }
-        toggleNFX()
+    /// Logs a binary WebSocket message (its size is shown).
+    public func logWebSocketData(_ data: Data, direction: NFXWebSocketDirection, url: URL) {
+        NFXMainFeed.send(.webSocket(.binary(data, direction: direction), url))
     }
 
-    @objc open func ignoreURL(_ url: String) {
-        ignoredURLs.append(url)
+    /// Logs a WebSocket ping.
+    public func logWebSocketPing(direction: NFXWebSocketDirection, url: URL) {
+        NFXMainFeed.send(.webSocket(.ping(direction: direction), url))
     }
 
-    @objc open func getSessionLog() -> Data? {
-        return try? Data(contentsOf: NFXPath.sessionLogURL)
+    // MARK: - Internal
+
+    var selectedGesture: ENFXGesture {
+        state.withLock { $0.gesture }
     }
 
-    @objc open func ignoreURLs(_ urls: [String]) {
-        ignoredURLs.append(contentsOf: urls)
-    }
-
-    @objc open func ignoreURLsWithRegex(_ regex: String) {
-        ignoredURLsRegex.append(NSRegularExpression(regex))
-    }
-
-    @objc open func ignoreURLsWithRegexes(_ regexes: [String]) {
-        ignoredURLsRegex.append(contentsOf: regexes.map { NSRegularExpression($0) })
-    }
-
-    internal func getLastVisitDate() -> Date {
-        return lastVisitDate
-    }
-
-    fileprivate func showNFX() {
-        guard !presented else { return }
-        showNFXFollowingPlatform()
-        presented = true
-    }
-
-    fileprivate func hideNFX() {
-        guard presented else { return }
-        hideNFXFollowingPlatform { [weak self] in
-            self?.presented = false
-            self?.lastVisitDate = Date()
+    /// Runs `work` on the main actor: right away when already on the main thread.
+    static func onMain(_ work: @escaping @MainActor @Sendable () -> Void) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { work() }
+        } else {
+            Task { @MainActor in work() }
         }
-    }
-
-    fileprivate func toggleNFX() {
-        presented ? hideNFX() : showNFX()
-    }
-
-    private func fileStorageInit() {
-        clearOldData()
-        NFXPath.deleteOldNFXLogs()
-        NFXPath.createNFXDirIfNotExist()
-    }
-
-    internal func clearOldData() {
-        NFXHTTPModelManager.shared.clear()
-        NFXPath.deleteNFXDir()
-        NFXPath.createNFXDirIfNotExist()
-    }
-
-    func getIgnoredURLs() -> [String] {
-        return ignoredURLs
-    }
-
-    func getIgnoredURLsRegexes() -> [NSRegularExpression] {
-        return ignoredURLsRegex
-    }
-
-    func getSelectedGesture() -> ENFXGesture {
-        return selectedGesture
     }
 }
 
-// MARK: - iOS Platform
-
-#if os(iOS)
-
-extension NFX {
-    fileprivate var presentingViewController: UIViewController? {
-        var rootViewController = UIWindow.keyWindow?.rootViewController
-        while let controller = rootViewController?.presentedViewController {
-            rootViewController = controller
-        }
-        return rootViewController
-    }
-
-    fileprivate func showNFXFollowingPlatform() {
-        showNFX(on: presentingViewController)
-    }
-
-    fileprivate func showNFX(on rootViewController: UIViewController?) {
-        // E4: Use NFXRootView which handles iPad split vs iPhone stack
-        let rootView = NFXRootView()
-        let hostingController = UIHostingController(rootView: rootView)
-        hostingController.view.tintColor = UIColor.NFXOrangeColor()
-
-        let navigationController = UINavigationController(rootViewController: hostingController)
-        navigationController.setNavigationBarHidden(true, animated: false)
-        navigationController.presentationController?.delegate = self
-
-        rootViewController?.present(navigationController, animated: true, completion: nil)
-        navigationViewController = navigationController
-    }
-
-    fileprivate func hideNFXFollowingPlatform(_ completion: (() -> Void)?) {
-        navigationViewController?.presentingViewController?.dismiss(animated: true, completion: completion)
-        navigationViewController = nil
-    }
+/// Direction of a logged WebSocket message.
+public nonisolated enum NFXWebSocketDirection: Sendable {
+    /// From the app to the server.
+    case sent
+    /// From the server to the app.
+    case received
 }
-
-extension NFX: UIAdaptivePresentationControllerDelegate {
-    public func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
-        guard started else { return }
-        presented = false
-    }
-}
-
-#elseif os(OSX)
-
-extension NFX {
-
-    public func windowDidClose() {
-        presented = false
-    }
-
-    private func setupNetfoxMenuItem() {
-        nfxMenuItem.target = self
-        nfxMenuItem.action = #selector(NFX.motionDetected)
-        nfxMenuItem.keyEquivalent = "n"
-        nfxMenuItem.keyEquivalentModifierMask = NSEvent.ModifierFlags(
-            rawValue: UInt(Int(NSEvent.ModifierFlags.command.rawValue | NSEvent.ModifierFlags.shift.rawValue))
-        )
-    }
-
-    public func addNetfoxToMainMenu() {
-        setupNetfoxMenuItem()
-        if let menu = mainMenu {
-            menu.insertItem(nfxMenuItem, at: 0)
-        }
-    }
-
-    public func removeNetfoxFromMainmenu() {
-        if let menu = mainMenu {
-            menu.removeItem(nfxMenuItem)
-        }
-    }
-
-    public func showNFXFollowingPlatform() {
-        if windowController == nil {
-            let nibName = Constants.nibName.rawValue
-            windowController = NSWindowController(windowNibName: nibName)
-        }
-        windowController?.showWindow(nil)
-    }
-
-    public func hideNFXFollowingPlatform(completion: (() -> Void)?) {
-        windowController?.close()
-        completion?()
-    }
-}
-
-#endif
