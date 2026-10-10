@@ -174,14 +174,15 @@ NFX.shared.logWebSocketPing(direction: .sent, url: socketURL)
 ### Session log, cache policy, stop
 
 ```swift
-let log: Data? = NFX.shared.getSessionLog()          // plain-text log of this session
+let log: Data? = await NFX.shared.sessionLog()       // plain-text log of this session
+let sameLog = NFX.shared.getSessionLog()             // synchronous 3.x API: waits for pending disk writes
 NFX.shared.setCachePolicy(.allowedInMemoryOnly)      // default: .notAllowed
 NFX.shared.stop()                                    // stops capturing and clears the data
 ```
 
 ## Features
 
-<!-- GIF: assets/search-filter.gif, assets/detail-body.gif, assets/share-export.gif, assets/statistics.gif, assets/ipad-split.gif -->
+<!-- GIF placeholders: assets/search-filter.gif, assets/detail-body.gif, assets/share-export.gif, assets/statistics.gif, assets/pin-compare.gif, assets/ipad-split.gif, assets/dark-mode.png -->
 
 - **Request list.**
   - Each row shows a status dot, the method, the URL, duration, content type and size, with a dot on requests that are new since your last visit.
