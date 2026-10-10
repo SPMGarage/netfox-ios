@@ -21,7 +21,11 @@ Package.resolved
 
 # Claude Code / AI
 CLAUDE.md
+PROJECT_LOG.md
 .playwright-mcp/
 
 # Logs
 *.log
+
+# claude-agents: per-developer plugin profile (do not commit)
+.claude/settings.local.json
