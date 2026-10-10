@@ -20,7 +20,7 @@ An in-app network inspector for iOS. netfox captures every HTTP(S) request your 
 
 ## Quick start
 
-1. Add the package `https://github.com/azimxxm/netfox-ios` (version 4.0.0 or later).
+1. Add the package `https://github.com/SPMGarage/netfox-ios` (version 4.0.0 or later).
 2. Start netfox at launch, in debug builds only:
 
    ```swift
@@ -70,9 +70,9 @@ Older releases keep working. Pick the one that matches your app's minimum deploy
 
 | netfox | Minimum iOS | Swift Package Manager |
 |---|---|---|
-| **4.x** | iOS 17 | `.package(url: "https://github.com/azimxxm/netfox-ios", from: "4.0.0")` |
-| 3.0.0 | iOS 15 | `.package(url: "https://github.com/azimxxm/netfox-ios", .upToNextMajor(from: "3.0.0"))` |
-| 2.1.0 | iOS 12 | `.package(url: "https://github.com/azimxxm/netfox-ios", .upToNextMajor(from: "2.0.0"))` |
+| **4.x** | iOS 17 | `.package(url: "https://github.com/SPMGarage/netfox-ios", from: "4.0.0")` |
+| 3.0.0 | iOS 15 | `.package(url: "https://github.com/SPMGarage/netfox-ios", .upToNextMajor(from: "3.0.0"))` |
+| 2.1.0 | iOS 12 | `.package(url: "https://github.com/SPMGarage/netfox-ios", .upToNextMajor(from: "2.0.0"))` |
 
 `from: "3.0.0"` means 3.0.0 up to (but not including) 4.0.0, so existing apps are never moved to 4.x automatically.
 
@@ -83,14 +83,14 @@ Older releases keep working. Pick the one that matches your app's minimum deploy
 In Xcode: **File ▸ Add Package Dependencies…** and enter:
 
 ```
-https://github.com/azimxxm/netfox-ios
+https://github.com/SPMGarage/netfox-ios
 ```
 
 Or in `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/azimxxm/netfox-ios", from: "4.0.0")
+    .package(url: "https://github.com/SPMGarage/netfox-ios", from: "4.0.0")
 ]
 ```
 
