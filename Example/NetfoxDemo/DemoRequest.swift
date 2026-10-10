@@ -61,7 +61,11 @@ extension DemoRequest {
                     url: url("https://httpbin.org/delay/2")),
         DemoRequest(id: "ephemeral", title: "Ephemeral session", group: .advanced, method: "GET",
                     url: url("https://jsonplaceholder.typicode.com/users/1"),
-                    usesEphemeralSession: true)
+                    usesEphemeralSession: true),
+        DemoRequest(id: "large-json", title: "Large JSON (~1 MB)", group: .advanced, method: "GET",
+                    url: url("https://jsonplaceholder.typicode.com/photos")),
+        DemoRequest(id: "binary", title: "Binary (16 KB)", group: .advanced, method: "GET",
+                    url: url("https://httpbin.org/bytes/16384"))
     ]
 
     private static func url(_ string: StaticString) -> URL {
