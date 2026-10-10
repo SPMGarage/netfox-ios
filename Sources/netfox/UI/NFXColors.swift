@@ -3,13 +3,14 @@
 //  netfox
 //
 //  netfox palette, adapting to light and dark mode (was NFXColor.NFX*Color() in 3.x).
+//  nonisolated: the JSON highlighter builds its colors off the main actor.
 //
 
 import SwiftUI
 #if canImport(UIKit)
 import UIKit
 
-extension UIColor {
+nonisolated extension UIColor {
     private static func nfxDynamic(light: UInt32, dark: UInt32) -> UIColor {
         UIColor { traits in
             UIColor(nfxHex: traits.userInterfaceStyle == .dark ? dark : light)
@@ -35,7 +36,7 @@ extension UIColor {
     static let nfxDarkRed = nfxDynamic(light: 0x643026, dark: 0xD34A33)
 }
 
-extension Color {
+nonisolated extension Color {
     static let nfxOrange = Color(uiColor: .nfxOrange)
     static let nfxGreen = Color(uiColor: .nfxGreen)
     static let nfxDarkGreen = Color(uiColor: .nfxDarkGreen)

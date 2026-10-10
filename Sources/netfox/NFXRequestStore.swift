@@ -224,6 +224,13 @@ package final class NFXRequestStore {
         return await storage.body(for: record.id, part: part)
     }
 
+    /// The file that holds a stored body (for ShareLink), or nil when nothing was stored.
+    /// Only builds the URL; it does not touch the disk.
+    package func bodyFileURL(_ part: NFXBodyPart, of record: NFXRecord) -> URL? {
+        guard record.body(part).isStored else { return nil }
+        return storage.bodyFileURL(for: record.id, part: part)
+    }
+
     /// B4: writes a HAR file with the given records (default: all) and returns its URL.
     package func exportHAR(_ records: [NFXRecord]? = nil) async throws -> URL {
         try await NFXHARExporter.exportFile(records: records ?? self.records, storage: storage)

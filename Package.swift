@@ -29,8 +29,6 @@ let package = Package(
             name: "netfox",
             dependencies: ["NetfoxCore"],
             path: "Sources/netfox",
-            // LegacyUI holds the 3.x SwiftUI views until they are ported to the new store.
-            exclude: ["LegacyUI"],
             resources: [.process("PrivacyInfo.xcprivacy")],
             swiftSettings: upcomingFeatures + [.defaultIsolation(MainActor.self)]
         ),

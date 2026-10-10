@@ -72,6 +72,11 @@ final class NFXPresenter: NSObject, UIAdaptivePresentationControllerDelegate {
             .tint(Color.nfxOrange)
 
         let controller = UIHostingController(rootView: rootView)
+        // E4: in regular width a sheet is too narrow for the split view's two columns
+        // (it collapses), so the inspector covers the screen there. Compact width keeps the sheet.
+        if presenter.traitCollection.horizontalSizeClass == .regular {
+            controller.modalPresentationStyle = .fullScreen
+        }
         controller.presentationController?.delegate = self
         hostingController = controller
         presenter.present(controller, animated: true)
