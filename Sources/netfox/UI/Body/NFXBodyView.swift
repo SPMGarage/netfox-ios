@@ -96,6 +96,12 @@ struct NFXBodyView: View {
                     systemImage: "scissors"
                 )
             }
+            if text.isDisplayTruncated {
+                note(
+                    "Showing the first \(NFXFormat.bytes(NFXBodyLoader.displayLimit)). Share the body to see all of it.",
+                    systemImage: "text.append"
+                )
+            }
             if text.isHighlightSkipped {
                 note(
                     "Colors are off for bodies over \(NFXFormat.bytes(NFXJSONHighlighter.byteLimit)).",

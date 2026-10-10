@@ -9,9 +9,11 @@
 import Foundation
 import os
 
-// @unchecked Sendable: the mutable state is touched only on the router's serial
-// delegate queue (plus init, which happens before resume); `stopFlag` is
-// lock-protected and every other stored property is immutable.
+// @unchecked Sendable: the mutable state below is touched only on the router's serial
+// delegate queue; `state` (stop flag, internal task, captured body) is lock-protected and
+// every other stored property is immutable. Response, data, redirect and finish calls go to
+// the client from the delegate queue, as in netfox 3.x, so they can race stopLoading on the
+// client thread; challenges are forwarded on the client thread (see NFXClientThread).
 final class NFXCaptureTask: @unchecked Sendable {
 
     private enum Phase {
@@ -21,17 +23,29 @@ final class NFXCaptureTask: @unchecked Sendable {
         case finished
     }
 
+    private struct State: Sendable {
+        var isStopped = false
+        var task: URLSessionDataTask?
+        var body: NFXRequestBodyCapture?
+    }
+
+    /// Request bodies are read here, not on the client thread: an app stream can block, and
+    /// CFNetwork uses one client thread for every intercepted request.
+    private static let bodyQueue = DispatchQueue(
+        label: "uz.azimjondev.netfox.body",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
+
     let id: UUID
-    let task: URLSessionDataTask
 
     private let originalRequest: URLRequest
-    private let body: NFXRequestBodyCapture
     private let startDate = Date()
     private let router: NFXSessionRouter
     private let settings: NFXInterceptionSettings
     private let storage: NFXStorage
     private let hub: NFXRecordHub
-    private let stopFlag = OSAllocatedUnfairLock(initialState: false)
+    private let state = OSAllocatedUnfairLock(initialState: State())
     /// The thread that called startLoading; challenges are forwarded there.
     private let clientThread = NFXClientThread()
 
@@ -61,26 +75,63 @@ final class NFXCaptureTask: @unchecked Sendable {
         self.settings = settings
         self.storage = storage
         self.hub = hub
-        let body = NFXRequestBodyCapture(request: request, spillFileURL: storage.uploadSpillFileURL(for: id))
-        self.body = body
-        self.task = router.session.dataTask(with: NFXProtocol.markedAsInternal(body.request))
     }
 
     // MARK: - Client thread
 
+    /// startLoading: captures the body on a background queue, then starts the internal task.
     func resume() {
-        router.register(self)
-        task.resume()
+        Self.bodyQueue.async { [self] in
+            start()
+        }
     }
 
     /// stopLoading: the URL loading system no longer wants callbacks for this request.
     func stop() {
-        stopFlag.withLock { $0 = true }
-        task.cancel() // no effect once the task has completed
+        let task = state.withLock { state -> URLSessionDataTask? in
+            state.isStopped = true
+            return state.task
+        }
+        task?.cancel() // no effect once the task has completed
+    }
+
+    // MARK: - Body queue
+
+    private func start() {
+        let body = NFXRequestBodyCapture(request: originalRequest, spillFileURL: storage.uploadSpillFileURL(for: id))
+        if let failure = body.failure {
+            // the body could not be kept whole: fail like a broken body stream would
+            state.withLock { $0.body = body }
+            router.queue.async { [self] in
+                _ = didComplete(error: failure)
+            }
+            return
+        }
+        let task = router.session.dataTask(with: NFXProtocol.markedAsInternal(body.request))
+        let shouldStart = state.withLock { state -> Bool in
+            guard !state.isStopped else { return false }
+            state.task = task
+            state.body = body
+            return true
+        }
+        guard shouldStart else {
+            // stopLoading came first: never start the task
+            if let spill = body.spillFileURL {
+                storage.removeFile(at: spill)
+            }
+            return
+        }
+        router.register(self, for: task)
+        task.resume()
     }
 
     private var isStopped: Bool {
-        stopFlag.withLock { $0 }
+        state.withLock { $0.isStopped }
+    }
+
+    /// The captured request body; set before the internal task starts.
+    private var body: NFXRequestBodyCapture? {
+        state.withLock { $0.body }
     }
 
     /// The protocol and its client, unless the load was stopped.
@@ -100,13 +151,13 @@ final class NFXCaptureTask: @unchecked Sendable {
     }
 
     func didReceive(_ data: Data) {
+        if let (owner, client) = forwardTarget {
+            client.urlProtocol(owner, didLoad: data)
+        }
         responseLength += data.count
         let room = NFXStorage.maxBodyBytes - responseData.count
         if room > 0 {
             responseData.append(data.prefix(room))
-        }
-        if let (owner, client) = forwardTarget {
-            client.urlProtocol(owner, didLoad: data)
         }
     }
 
@@ -114,8 +165,7 @@ final class NFXCaptureTask: @unchecked Sendable {
     /// which starts a new NFXProtocol for the target. The router then cancels this task.
     func willRedirect(response: HTTPURLResponse, to newRequest: URLRequest) {
         phase = .redirected
-        let record = makeRecord(response: response, responseBody: .empty, redirectURL: newRequest.url, error: nil)
-        publish(record, responseBody: nil)
+        // the app hears about the redirect first; recording the hop comes after
         if let (owner, client) = forwardTarget {
             client.urlProtocol(owner, wasRedirectedTo: NFXProtocol.removingInternalMark(newRequest), redirectResponse: response)
             // CustomHTTPProtocol: end this load; the URL loading system runs the redirect in a new
@@ -123,6 +173,8 @@ final class NFXCaptureTask: @unchecked Sendable {
             // the app refuses the redirect; this way the refused task ends with NSUserCancelledError.)
             client.urlProtocol(owner, didFailWithError: NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError))
         }
+        let record = makeRecord(response: response, responseBody: .empty, redirectURL: newRequest.url, error: nil)
+        publish(record, responseBody: nil)
     }
 
     /// P1-6: server trust and client-certificate challenges go to the app's session (so its
@@ -156,8 +208,8 @@ final class NFXCaptureTask: @unchecked Sendable {
         let forwarded = URLAuthenticationChallenge(authenticationChallenge: challenge, sender: sender)
         let target = NFXUncheckedSendable(value: owner)
         // the client answers on the thread that calls it, so call it on the client thread
-        clientThread.perform { [stopFlag] in
-            guard !stopFlag.withLock({ $0 }) else {
+        clientThread.perform { [state] in
+            guard !state.withLock({ $0.isStopped }) else {
                 completionHandler(.cancelAuthenticationChallenge, nil)
                 return
             }
@@ -174,6 +226,7 @@ final class NFXCaptureTask: @unchecked Sendable {
 
     /// A fresh body stream when the internal session has to resend the body (auth retry).
     func makeBodyStream() -> InputStream? {
+        guard let body else { return nil }
         if let url = body.spillFileURL {
             return InputStream(url: url)
         }
@@ -202,7 +255,7 @@ final class NFXCaptureTask: @unchecked Sendable {
     /// - Returns: true when nothing else is expected for this task (metrics already arrived).
     func didComplete(error: (any Error)?) -> Bool {
         defer {
-            if let spill = body.spillFileURL {
+            if let spill = body?.spillFileURL {
                 storage.removeFile(at: spill)
             }
         }
@@ -254,7 +307,7 @@ final class NFXCaptureTask: @unchecked Sendable {
             url: originalRequest.url,
             method: originalRequest.httpMethod ?? "GET",
             requestHeaders: NFXHeader.list(from: originalRequest.allHTTPHeaderFields),
-            requestBody: body.info,
+            requestBody: body?.info ?? .empty,
             cachePolicy: originalRequest.cachePolicy,
             timeoutInterval: originalRequest.timeoutInterval,
             startDate: startDate,
@@ -271,7 +324,7 @@ final class NFXCaptureTask: @unchecked Sendable {
 
     private func publish(_ record: NFXRecord, responseBody: Data?) {
         publishedRecord = record
-        storage.persist(record, requestBody: body.data, responseBody: responseBody, publishTo: hub)
+        storage.persist(record, requestBody: body?.data, responseBody: responseBody, publishTo: hub)
         logToConsoleIfEnabled(record)
     }
 

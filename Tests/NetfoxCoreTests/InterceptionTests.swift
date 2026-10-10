@@ -253,6 +253,80 @@ final class InterceptionTests {
         }
         let connections = Set(server.hits.filter { $0.query?.hasPrefix("case=reuse-") == true }.map(\.connectionID))
         #expect(connections.count == 1)
+        // the reuse only proves something when netfox really carried all five requests
+        for index in 0..<5 {
+            let captured = await collector.wait(query: "case=reuse-\(index)") { !$0.isEmpty }
+            #expect(captured.count == 1, "request \(index) was not captured")
+        }
+    }
+
+    @Test("a slow upload stream does not hold up other intercepted requests", .timeLimit(.minutes(1)))
+    func slowUploadDoesNotBlockOthers() async throws {
+        let uploadSession = makeSession()
+        let otherSession = makeSession()
+        defer {
+            uploadSession.finishTasksAndInvalidate()
+            otherSession.finishTasksAndInvalidate()
+        }
+        // a producer feeds 1 MB into the body stream over about 1.6 s
+        let body = SlowBodyStream(chunkSize: 64 * 1024, chunks: 16, pause: 0.1)
+        var upload = URLRequest(url: server.url("/echo?case=slow-upload"))
+        upload.httpMethod = "POST"
+        upload.httpBodyStream = body.input
+        upload.timeoutInterval = 20
+        body.start()
+        async let uploaded = uploadSession.data(for: upload)
+
+        try await Task.sleep(for: .milliseconds(150))
+        let clock = ContinuousClock()
+        let started = clock.now
+        let (_, response) = try await otherSession.data(from: server.url("/ok?case=parallel"))
+        let elapsed = clock.now - started
+
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        #expect(elapsed < .milliseconds(750), "the GET waited \(elapsed) behind the upload")
+        let (echoed, _) = try await uploaded
+        #expect(echoed.count == 16 * 64 * 1024)
+    }
+}
+
+/// A bound stream pair whose writer feeds the body slowly, like a producer-backed upload.
+// @unchecked Sendable: `output` is used only by the writer thread once start() runs.
+final class SlowBodyStream: @unchecked Sendable {
+    let input: InputStream
+    private let output: OutputStream
+    private let chunkSize: Int
+    private let chunks: Int
+    private let pause: TimeInterval
+
+    init(chunkSize: Int, chunks: Int, pause: TimeInterval) {
+        var input: InputStream?
+        var output: OutputStream?
+        Stream.getBoundStreams(withBufferSize: chunkSize, inputStream: &input, outputStream: &output)
+        self.input = input!
+        self.output = output!
+        self.chunkSize = chunkSize
+        self.chunks = chunks
+        self.pause = pause
+    }
+
+    func start() {
+        Thread { [self] in
+            output.open()
+            let chunk = [UInt8](repeating: 0x61, count: chunkSize)
+            for _ in 0..<chunks {
+                var offset = 0
+                while offset < chunk.count {
+                    let written = chunk[offset...].withUnsafeBufferPointer { buffer in
+                        output.write(buffer.baseAddress!, maxLength: buffer.count)
+                    }
+                    guard written > 0 else { break }
+                    offset += written
+                }
+                Thread.sleep(forTimeInterval: pause)
+            }
+            output.close()
+        }.start()
     }
 }
 

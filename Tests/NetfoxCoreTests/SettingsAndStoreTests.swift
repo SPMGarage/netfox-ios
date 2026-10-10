@@ -116,6 +116,54 @@ struct RequestStoreTests {
         try? FileManager.default.removeItem(at: directory)
     }
 
+    @Test("Clear and the record limit keep removed records from coming back with late metrics")
+    func lateUpdatesAfterRemoval() async {
+        let directory = URL.temporaryDirectory.appending(path: "netfox-tests-\(UUID().uuidString)")
+        let storage = NFXStorage(directoryURL: directory)
+        let store = NFXRequestStore(settings: NFXInterceptionSettings(), storage: storage, recordLimit: 2)
+        let metrics = NFXRequestMetrics(taskInterval: DateInterval(), transactions: [])
+
+        // the limit drops the oldest record; its late metrics must not bring it back
+        let oldest = record(1)
+        store.apply(oldest)
+        store.apply(record(2))
+        store.apply(record(3))
+        store.apply(oldest.withMetrics(metrics))
+        #expect(!store.records.contains { $0.id == oldest.id })
+        #expect(store.insertionCount == 3)
+
+        // after Clear: neither a late update nor a request that started before the tap comes back
+        let shown = store.records[0]
+        let inFlight = NFXRecord(url: URL(string: "https://example.com/slow"), method: "GET", startDate: Date().addingTimeInterval(-1))
+        store.clear()
+        store.apply(shown.withMetrics(metrics))
+        store.apply(inFlight)
+        #expect(store.records.isEmpty)
+        #expect(!store.hasRecords)
+
+        // a request that starts after Clear is shown
+        store.apply(NFXRecord(url: URL(string: "https://example.com/new"), method: "GET", startDate: Date()))
+        #expect(store.records.count == 1)
+        #expect(store.hasRecords)
+
+        await storage.flush()
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    @Test("the filtered list follows new records and filter changes")
+    func filteredListFollowsChanges() {
+        let store = makeStore(limit: 10)
+        store.statusFilter = .clientError
+        store.apply(record(1, status: 200))
+        store.apply(record(2, status: 404))
+        store.apply(record(3, status: 404))
+        #expect(store.filteredRecords.map(\.statusCode) == [404, 404])
+        store.statusFilter = .all
+        #expect(store.filteredRecords.count == 3)
+        store.searchText = "items/1"
+        #expect(store.filteredRecords.map(\.statusCode) == [200])
+    }
+
     @Test("toggles read by the interception path write through to the settings")
     func writeThrough() {
         let settings = NFXInterceptionSettings()
@@ -145,7 +193,7 @@ struct RequestStoreTests {
 @Suite("NFX facade")
 struct FacadeTests {
 
-    @Test("thread-safe entry points do not trap off the main thread")
+    @Test("settings, ignore rules and logging calls work off the main thread (show/hide are no-ops on macOS)")
     func offMainCalls() async {
         await Task.detached {
             let nfx = NFX.sharedInstance()

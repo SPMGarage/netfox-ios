@@ -131,29 +131,50 @@ package enum NFXHARExporter {
         return try encoder.encode(document)
     }
 
-    /// Reads the stored bodies, writes `netfox-<date>.har` into the netfox folder and returns its URL.
+    /// Writes `netfox-<date>.har` into the netfox folder and returns its URL.
+    ///
+    /// Entries are encoded and written one record at a time, so memory stays at about one
+    /// record's bodies instead of every body of the session. Earlier exports are deleted.
     @concurrent
     package static func exportFile(
         records: [NFXRecord],
         creatorVersion: String = NFXBuildInfo.version,
         storage: NFXStorage = .shared
     ) async throws -> URL {
-        var stored: [UUID: [NFXBodyPart: Data]] = [:]
-        for record in records {
-            for part in NFXBodyPart.allCases where record.body(part).isStored {
-                if let data = await storage.body(for: record.id, part: part) {
-                    stored[record.id, default: [:]][part] = data
-                }
-            }
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: storage.directoryURL, withIntermediateDirectories: true)
+        let previousExports = (try? fileManager.contentsOfDirectory(at: storage.directoryURL, includingPropertiesForKeys: nil)) ?? []
+        for file in previousExports where file.pathExtension == "har" {
+            try? fileManager.removeItem(at: file)
         }
-        let document = makeDocument(records: records, creatorVersion: creatorVersion) { id, part in
-            stored[id]?[part]
-        }
-        let data = try encode(document)
+
         let stamp = Int(Date().timeIntervalSince1970)
         let url = storage.directoryURL.appending(path: "netfox-\(stamp).har", directoryHint: .notDirectory)
-        try FileManager.default.createDirectory(at: storage.directoryURL, withIntermediateDirectories: true)
-        try data.write(to: url, options: .atomic)
+        guard fileManager.createFile(atPath: url.path(percentEncoded: false), contents: nil) else {
+            throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: url.path(percentEncoded: false)])
+        }
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        // the envelope is written by hand so every entry can be encoded and released on its own
+        let creator = try encoder.encode(NFXHARDocument.Creator(name: "netfox", version: creatorVersion))
+        try handle.write(contentsOf: Data(#"{"log":{"creator":"#.utf8))
+        try handle.write(contentsOf: creator)
+        try handle.write(contentsOf: Data(#","entries":["#.utf8))
+        for (index, record) in records.sorted(by: { $0.startDate < $1.startDate }).enumerated() {
+            var bodies: [NFXBodyPart: Data] = [:]
+            for part in NFXBodyPart.allCases where record.body(part).isStored {
+                bodies[part] = await storage.body(for: record.id, part: part)
+            }
+            let entry = entry(for: record) { _, part in bodies[part] }
+            if index > 0 {
+                try handle.write(contentsOf: Data(",".utf8))
+            }
+            try handle.write(contentsOf: try encoder.encode(entry))
+        }
+        try handle.write(contentsOf: Data(#"],"version":"1.2"}}"#.utf8))
         return url
     }
 

@@ -95,7 +95,7 @@ struct NFXSettingsView: View {
             ShareLink(item: store.sessionLogURL, preview: SharePreview("netfox session log")) {
                 Label("Share Session Log", systemImage: "square.and.arrow.up")
             }
-            .disabled(store.records.isEmpty)
+            .disabled(!store.hasRecords)
             .accessibilityIdentifier("nfx.settings.shareLog")
             Button(action: exportHAR) {
                 LabeledContent {
@@ -106,7 +106,7 @@ struct NFXSettingsView: View {
                     Label("Export as HAR", systemImage: "doc.badge.arrow.up")
                 }
             }
-            .disabled(store.records.isEmpty || harExport == .exporting)
+            .disabled(!store.hasRecords || harExport == .exporting)
             .accessibilityIdentifier("nfx.settings.exportHAR")
             switch harExport {
             case .ready(let url):

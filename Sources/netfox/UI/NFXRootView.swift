@@ -62,9 +62,9 @@ private struct NFXSplitLayout: View {
                 isShowingSettings = false
             }
         }
-        .onChange(of: store.records.isEmpty) { _, isEmpty in
+        .onChange(of: store.hasRecords) { _, hasRecords in
             // after "Clear" the detail column goes back to "Select a Request"
-            if isEmpty {
+            if !hasRecords {
                 selection = nil
             }
         }

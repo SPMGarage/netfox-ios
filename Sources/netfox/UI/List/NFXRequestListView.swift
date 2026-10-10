@@ -168,7 +168,7 @@ struct NFXRequestListView: View {
 
     @ViewBuilder
     private func emptyState(for records: [NFXRecord]) -> some View {
-        if store.records.isEmpty {
+        if !store.hasRecords {
             ContentUnavailableView(
                 "No Requests Yet",
                 systemImage: "network",
@@ -205,7 +205,7 @@ struct NFXRequestListView: View {
                 isConfirmingClear = true
             }
             .accessibilityIdentifier("nfx.clear")
-            .disabled(store.records.isEmpty)
+            .disabled(!store.hasRecords)
             .confirmationDialog(
                 "Clear all captured requests?",
                 isPresented: $isConfirmingClear,

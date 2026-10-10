@@ -10,7 +10,9 @@
 import Foundation
 
 /// The request body as netfox captured it, plus the request to send on the internal session.
-struct NFXRequestBodyCapture {
+///
+/// Reading a stream body can block, so this runs on a background queue (see NFXCaptureTask).
+struct NFXRequestBodyCapture: Sendable {
 
     /// The request to send. Its stream body may have been replaced by `httpBody` or a file stream.
     let request: URLRequest
@@ -19,6 +21,9 @@ struct NFXRequestBodyCapture {
     let info: NFXBodyInfo
     /// File holding a stream body larger than the cap; resent through `needNewBodyStream`.
     let spillFileURL: URL?
+    /// Set when the body could not be kept whole. The request must then fail instead of
+    /// going out with a shorter body than the app sent.
+    let failure: (any Error)?
 
     /// Captures the body of `request`. `spillFileURL` is used only for oversized streams.
     init(request original: URLRequest, limit: Int = NFXStorage.maxBodyBytes, spillFileURL spillURL: URL) {
@@ -26,9 +31,11 @@ struct NFXRequestBodyCapture {
 
         if let body = original.httpBody {
             self.request = request
-            self.data = body.isEmpty ? nil : Data(body.prefix(limit))
+            // Data is copy-on-write: a body under the cap is shared, not copied
+            self.data = body.isEmpty ? nil : (body.count <= limit ? body : body.prefix(limit))
             self.info = NFXBodyInfo(length: body.count, isStored: !body.isEmpty, isTruncated: body.count > limit)
             self.spillFileURL = nil
+            self.failure = nil
             return
         }
 
@@ -37,6 +44,7 @@ struct NFXRequestBodyCapture {
             self.data = nil
             self.info = .empty
             self.spillFileURL = nil
+            self.failure = nil
             return
         }
 
@@ -46,6 +54,7 @@ struct NFXRequestBodyCapture {
             self.data = nil
             self.info = NFXBodyInfo(length: declared, isStored: false, isTruncated: false)
             self.spillFileURL = nil
+            self.failure = nil
             return
         }
 
@@ -60,6 +69,7 @@ struct NFXRequestBodyCapture {
             self.data = head.isEmpty ? nil : head
             self.info = NFXBodyInfo(length: head.count, isStored: !head.isEmpty, isTruncated: false)
             self.spillFileURL = nil
+            self.failure = nil
             return
         }
 
@@ -69,12 +79,18 @@ struct NFXRequestBodyCapture {
             request.httpBodyStream = fileStream
             self.spillFileURL = spillURL
             self.info = NFXBodyInfo(length: total, isStored: true, isTruncated: true)
+            self.failure = nil
         } else {
-            // could not spill: send what was read so the request still goes out
-            NFXLog.interception.error("Could not buffer a large upload stream; sending \(head.count) bytes")
-            request.httpBody = head
+            // The app's stream is already drained, so sending `head` would upload a shorter body
+            // while the app sees a normal response. Fail the request instead.
+            NFXLog.interception.error("Could not buffer a large upload stream; failing the request")
             self.spillFileURL = nil
             self.info = NFXBodyInfo(length: head.count, isStored: true, isTruncated: true)
+            self.failure = NSError(
+                domain: NSURLErrorDomain,
+                code: NSURLErrorRequestBodyStreamExhausted,
+                userInfo: [NSLocalizedDescriptionKey: "netfox could not buffer the request body stream."]
+            )
         }
         self.request = request
         self.data = Data(head.prefix(limit))

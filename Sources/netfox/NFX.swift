@@ -140,9 +140,20 @@ public nonisolated final class NFX: NSObject, Sendable {
     }
 
     /// The plain-text log of this session's requests, or nil when nothing was captured yet.
+    ///
+    /// Waits for netfox's pending disk writes, which can take a moment after large
+    /// responses. From async code prefer ``sessionLog()``.
     @objc
     public func getSessionLog() -> Data? {
         NFXStorage.shared.sessionLogSynchronously()
+    }
+
+    /// The plain-text log of this session's requests, or nil when nothing was captured yet.
+    /// Waits for pending writes without blocking the caller's thread.
+    public func sessionLog() async -> Data? {
+        let storage = NFXStorage.shared
+        await storage.flush()
+        return await storage.sessionLog()
     }
 
     // MARK: - Inspector

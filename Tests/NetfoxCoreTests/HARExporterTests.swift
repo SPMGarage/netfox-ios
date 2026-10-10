@@ -80,6 +80,33 @@ struct HARExporterTests {
         }
     }
 
+    @Test("exportFile writes the same document entry by entry and keeps one export file")
+    func exportFileMatchesDocument() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "netfox-tests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storage = NFXStorage(directoryURL: directory)
+        let records = try Self.makeRecords()
+        let bodies = Self.bodies(for: records)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for record in records {
+            for part in NFXBodyPart.allCases {
+                if let data = bodies(record.id, part) {
+                    try data.write(to: storage.bodyFileURL(for: record.id, part: part))
+                }
+            }
+        }
+
+        _ = try await NFXHARExporter.exportFile(records: records, creatorVersion: "4.0.0", storage: storage)
+        let url = try await NFXHARExporter.exportFile(records: records, creatorVersion: "4.0.0", storage: storage)
+
+        let written = try JSONDecoder().decode(NFXHARDocument.self, from: Data(contentsOf: url))
+        let expected = NFXHARExporter.makeDocument(records: records, creatorVersion: "4.0.0", bodies: bodies)
+        #expect(written == expected)
+        let exports = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "har" }
+        #expect(exports.count == 1)
+    }
+
     @Test("log, creator, entries and every required entry field")
     func requiredFields() throws {
         let records = try Self.makeRecords()

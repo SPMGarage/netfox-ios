@@ -26,6 +26,14 @@ package final class NFXRequestStore {
     /// Captured records, newest first. A record's value is replaced when it is updated.
     package private(set) var records: [NFXRecord] = []
 
+    /// Records that pass the type filter, the status filter and the search text, newest first.
+    /// Kept up to date on every change, so view bodies don't filter 1000 records per render.
+    package private(set) var filteredRecords: [NFXRecord] = []
+
+    /// Whether anything was captured. Changes only between empty and non-empty, so views that
+    /// need just this don't re-render for every request.
+    package private(set) var hasRecords = false
+
     /// B9: ids of pinned records (in memory only).
     package private(set) var pinnedIDs: Set<UUID> = []
 
@@ -38,13 +46,19 @@ package final class NFXRequestStore {
     // MARK: - Filters
 
     /// Response types shown in the list.
-    package var enabledKinds: Set<NFXContentKind> = Set(NFXContentKind.allCases)
+    package var enabledKinds: Set<NFXContentKind> = Set(NFXContentKind.allCases) {
+        didSet { refilter() }
+    }
 
     /// B1: status class shown in the list.
-    package var statusFilter: NFXStatusFilter = .all
+    package var statusFilter: NFXStatusFilter = .all {
+        didSet { refilter() }
+    }
 
     /// Search text matched against URL, method, status and response type.
-    package var searchText = ""
+    package var searchText = "" {
+        didSet { refilter() }
+    }
 
     // MARK: - Feature toggles
 
@@ -76,6 +90,13 @@ package final class NFXRequestStore {
 
     /// Maximum number of unpinned records kept.
     @ObservationIgnored package let recordLimit: Int
+    /// Ids removed by Clear, stop() or the record limit. A late update for one of them
+    /// (metrics can arrive after the response) is ignored: its body files are gone.
+    @ObservationIgnored private var removedIDs: Set<UUID> = []
+    @ObservationIgnored private var removedOrder: [UUID] = []
+    /// Records that started before the last Clear are not added any more.
+    @ObservationIgnored private var clearedAt = Date.distantPast
+    private static let removedIDsMemory = 2000
     @ObservationIgnored private let settings: NFXInterceptionSettings
     @ObservationIgnored private let storage: NFXStorage
 
@@ -93,16 +114,6 @@ package final class NFXRequestStore {
     }
 
     // MARK: - Derived lists
-
-    /// Records that pass the type filter, the status filter and the search text, newest first.
-    package var filteredRecords: [NFXRecord] {
-        let kinds = enabledKinds
-        let status = statusFilter
-        let query = searchText
-        return records.filter { record in
-            kinds.contains(record.kind) && status.matches(record) && record.matches(search: query)
-        }
-    }
 
     /// B9: the filtered records that are pinned.
     package var pinnedRecords: [NFXRecord] {
@@ -165,23 +176,36 @@ package final class NFXRequestStore {
     package func apply(_ record: NFXRecord) {
         if let index = records.firstIndex(where: { $0.id == record.id }) {
             records[index] = record
+            if let filteredIndex = filteredRecords.firstIndex(where: { $0.id == record.id }) {
+                filteredRecords[filteredIndex] = record
+            }
             return
         }
+        // a late update of a removed record, or a request that started before Clear
+        guard !removedIDs.contains(record.id), record.startDate >= clearedAt else { return }
         records.insert(record, at: 0)
+        if passesFilters(record) {
+            filteredRecords.insert(record, at: 0)
+        }
         insertionCount += 1
         trimToLimit()
+        updateHasRecords()
     }
 
     /// "Clear": removes every record and pin and deletes stored bodies and the session log.
     package func clear() {
+        clearedAt = Date()
         removeAllRecords()
         storage.reset()
     }
 
     /// Removes records and pins only (files are handled by NetfoxCore on start/stop).
     package func removeAllRecords() {
+        rememberRemoved(records.map(\.id))
         records.removeAll()
+        filteredRecords.removeAll()
         pinnedIDs.removeAll()
+        updateHasRecords()
     }
 
     /// Call when the inspector closes; records after this moment count as new.
@@ -213,7 +237,39 @@ package final class NFXRequestStore {
             }
             index -= 1
         }
+        let removedSet = Set(removed)
+        filteredRecords.removeAll { removedSet.contains($0.id) }
+        rememberRemoved(removed)
         storage.removeBodies(for: removed)
+    }
+
+    private func passesFilters(_ record: NFXRecord) -> Bool {
+        enabledKinds.contains(record.kind) && statusFilter.matches(record) && record.matches(search: searchText)
+    }
+
+    private func refilter() {
+        filteredRecords = records.filter(passesFilters)
+    }
+
+    private func updateHasRecords() {
+        let value = !records.isEmpty
+        if hasRecords != value {
+            hasRecords = value
+        }
+    }
+
+    /// Remembers removed ids (the most recent ``removedIDsMemory`` of them).
+    private func rememberRemoved(_ ids: [UUID]) {
+        for id in ids where removedIDs.insert(id).inserted {
+            removedOrder.append(id)
+        }
+        let overflow = removedOrder.count - Self.removedIDsMemory
+        if overflow > 0 {
+            for id in removedOrder.prefix(overflow) {
+                removedIDs.remove(id)
+            }
+            removedOrder.removeFirst(overflow)
+        }
     }
 
     // MARK: - Loading and export (all off the main actor)

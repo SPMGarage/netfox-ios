@@ -44,8 +44,9 @@ final class NFXSessionRouter: NSObject, URLSessionDataDelegate, @unchecked Senda
 
     // MARK: - Capture registry
 
-    func register(_ capture: NFXCaptureTask) {
-        captures.withLock { $0[capture.task.taskIdentifier] = capture }
+    func register(_ capture: NFXCaptureTask, for task: URLSessionTask) {
+        let identifier = task.taskIdentifier
+        captures.withLock { $0[identifier] = capture }
     }
 
     private func capture(for task: URLSessionTask) -> NFXCaptureTask? {
@@ -57,8 +58,7 @@ final class NFXSessionRouter: NSObject, URLSessionDataDelegate, @unchecked Senda
     }
 
     /// Keeps a finished capture around for late metrics, then drops it.
-    private func removeLater(_ capture: NFXCaptureTask) {
-        let identifier = capture.task.taskIdentifier
+    private func removeLater(_ capture: NFXCaptureTask, identifier: Int) {
         queue.asyncAfter(deadline: .now() + Self.lateMetricsWindow) { [captures] in
             captures.withLock { map in
                 if map[identifier] === capture {
@@ -156,7 +156,7 @@ final class NFXSessionRouter: NSObject, URLSessionDataDelegate, @unchecked Senda
         if capture.didComplete(error: error) {
             remove(task)
         } else {
-            removeLater(capture)
+            removeLater(capture, identifier: task.taskIdentifier)
         }
     }
 }

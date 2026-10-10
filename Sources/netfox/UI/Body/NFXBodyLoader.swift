@@ -30,6 +30,8 @@ nonisolated struct NFXRenderedText: Sendable, Equatable {
     let isJSON: Bool
     /// Pretty JSON above the highlight limit is shown without colors.
     let isHighlightSkipped: Bool
+    /// Only the first ``NFXBodyLoader/displayLimit`` bytes are shown (the full file can be shared).
+    var isDisplayTruncated = false
 }
 
 /// What the body screen shows.
@@ -43,6 +45,10 @@ nonisolated enum NFXBodyContent: Sendable {
 }
 
 nonisolated enum NFXBodyLoader {
+
+    /// Text beyond this many UTF-8 bytes is not shown: laying out a 10 MB body
+    /// in the text view costs seconds on the main thread.
+    static let displayLimit = 2 * 1024 * 1024
 
     /// Builds the content for `data`. Runs off the main actor: a body can be 10 MB.
     @concurrent
@@ -67,13 +73,31 @@ nonisolated enum NFXBodyLoader {
         }
         let isJSON = NFXContentKind(contentType: mimeType) == .json || looksLikeJSON(data)
         guard isJSON, mode == .pretty, let pretty = await NFXJSONFormatter.prettyPrintedInBackground(data) else {
-            return .text(NFXRenderedText(plain: raw, highlighted: nil, isJSON: isJSON, isHighlightSkipped: false))
+            let (shown, isCut) = prefixForDisplay(raw)
+            return .text(NFXRenderedText(plain: shown, highlighted: nil, isJSON: isJSON, isHighlightSkipped: false, isDisplayTruncated: isCut))
         }
         guard pretty.utf8.count <= NFXJSONHighlighter.byteLimit else {
-            return .text(NFXRenderedText(plain: pretty, highlighted: nil, isJSON: true, isHighlightSkipped: true))
+            let (shown, isCut) = prefixForDisplay(pretty)
+            return .text(NFXRenderedText(plain: shown, highlighted: nil, isJSON: true, isHighlightSkipped: true, isDisplayTruncated: isCut))
         }
         let highlighted = await NFXJSONHighlighter.highlight(pretty)
         return .text(NFXRenderedText(plain: pretty, highlighted: highlighted, isJSON: true, isHighlightSkipped: false))
+    }
+
+    /// The first ``displayLimit`` bytes of `text`, cut at a line break when there is one nearby.
+    static func prefixForDisplay(_ text: String) -> (text: String, isCut: Bool) {
+        let utf8 = text.utf8
+        guard utf8.count > displayLimit else { return (text, false) }
+        var end = utf8.index(utf8.startIndex, offsetBy: displayLimit)
+        // don't split a character: step back to the nearest character boundary
+        while end > utf8.startIndex, String.Index(end, within: text) == nil {
+            end = utf8.index(before: end)
+        }
+        let head = text[..<end]
+        if let newline = head.lastIndex(of: "\n"), head.distance(from: newline, to: head.endIndex) < 4096 {
+            return (String(head[..<newline]), true)
+        }
+        return (String(head), true)
     }
 
     /// True when the first non-whitespace byte opens an object or an array.
