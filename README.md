@@ -1,83 +1,106 @@
 <p align="center">
-  <img src="netfox-logo.svg" />
+  <img src="netfox-logo.svg" alt="netfox" />
 </p>
 
 <p align="center">
-<img alt="Version" src="https://img.shields.io/badge/version-2.0.0-green.svg?style=flat-square" />
-<img alt="Platform" src="https://img.shields.io/badge/platform-iOS%2014%2B-blue.svg?style=flat-square" />
-<img alt="Swift" src="https://img.shields.io/badge/swift-5.9-orange.svg?style=flat-square" />
-<a href="https://opensource.org/licenses/MIT"><img alt="License" src="https://img.shields.io/badge/license-MIT-orange.svg?style=flat-square" /></a>
+<img alt="Version" src="https://img.shields.io/badge/version-4.0.0-green.svg?style=flat-square" />
+<img alt="Platform" src="https://img.shields.io/badge/platform-iOS%2017%2B-blue.svg?style=flat-square" />
+<img alt="Swift" src="https://img.shields.io/badge/swift-6.2%2B-orange.svg?style=flat-square" />
+<img alt="SPM" src="https://img.shields.io/badge/SPM-compatible-brightgreen.svg?style=flat-square" />
+<a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-lightgrey.svg?style=flat-square" /></a>
 </p>
 
 # netfox-ios
 
-A lightweight in-app network debugging library for iOS. Intercepts all HTTP/HTTPS requests — yours, third-party libraries (Alamofire, URLSession, etc.), and presents them in a shake-activated inspector UI.
+An in-app network inspector for iOS. netfox captures every HTTP(S) request your app makes — your own code, `URLSession.shared`, Alamofire and any other library built on `URLSession` — and shows it in an inspector you open by shaking the device.
 
-**Maintained by [Azimjon Abdurasulov](https://azimjondev.uz)** — forked from [kasketis/netfox](https://github.com/kasketis/netfox) and modernized for iOS 14+ with dark mode, SF Symbols, and modern Swift patterns.
+<!-- GIF placeholder: assets/overview.gif (hero recording) -->
 
-### Overview
+**Maintained by [Azimjon Abdurasulov](https://azimjondev.uz)** — a fork of [kasketis/netfox](https://github.com/kasketis/netfox), rebuilt for Swift 6 and modern SwiftUI.
 
-| ![](https://raw.githubusercontent.com/kasketis/netfox/master/assets/overview1_5_3.gif) | ![](https://cloud.githubusercontent.com/assets/1402212/12893260/78f90916-ce90-11e5-830a-d1a1b91b2ac4.png) |
-|---|---|
+## Quick start
 
-## What's New in v2.0
+1. Add the package `https://github.com/azimxxm/netfox-ios` (version 4.0.0 or later).
+2. Start netfox at launch, in debug builds only:
 
-- **iOS 14+ minimum** — dropped legacy iOS 12/13 support
-- **Dark mode** — full dynamic color support, adapts automatically
-- **SF Symbols** — replaced base64 PNG assets with native system icons
-- **System fonts** — better Dynamic Type and accessibility support
-- **Modern UI** — redesigned list cells with status dots, method badges, duration in ms/s
-- **Segmented control** for Info/Request/Response tabs with swipe gestures
-- **Privacy manifest** (`PrivacyInfo.xcprivacy`) for App Store compliance
-- **Force unwrap cleanup** — eliminated all force unwraps from production code
-- **Copy as cURL** — quickly copy any request as a cURL command
-- **Thread safety improvements** in model management
+   ```swift
+   import netfox
+
+   #if DEBUG
+   NFX.shared.start()
+   #endif
+   ```
+
+3. Run the app, make some requests and shake the device. In the Simulator use **Device ▸ Shake** or ⌃⌘Z.
+
+You don't need any other setup. netfox captures requests from `URLSession.shared`, your own sessions and libraries such as Alamofire.
+
+## What's new in 4.0
+
+- **Swift 6 language mode** with strict concurrency checking, built with zero warnings.
+- **Modern SwiftUI on iOS 17+**: Observation (`@Observable`), `NavigationSplitView` (list and detail side by side on iPad, a stack on iPhone), `ContentUnavailableView`, `ShareLink` and Swift Charts. The inspector picks up Liquid Glass automatically on iOS 26 and later.
+- **Rewritten capture engine.** All captured requests now go through one shared internal `URLSession`, so connections are reused. Captured requests are stored as immutable, thread-safe records.
+- **Request timeline.** Each request shows DNS, connect, TLS, send, wait and receive timings, taken from `URLSessionTaskMetrics`.
+- **TLS certificate details:** subject, issuer, validity dates, key type and chain length.
+- **Body handling.**
+  - Bodies are stored as raw bytes, so binary responses are kept instead of disappearing.
+  - JSON is pretty-printed in the original key order and without `\/` escapes.
+  - Large bodies open in a scrolling text view with Find. JSON over 200 KB is shown without colors to keep it responsive.
+- **Each redirect step is its own entry** (`302 → 302 → 200`), with no empty placeholder rows.
+- **HAR export** follows HAR 1.2. The tests check every field Chrome DevTools requires when importing.
+- **"Copy as cURL"** produces commands you can paste straight into a terminal, including JSON bodies.
+- **Public WebSocket logging API**, safe to call from any thread.
+- **Fixes:**
+  - requests with streamed bodies no longer hang;
+  - `start()` no longer deletes files from your app's Documents folder;
+  - the inspector can always be reopened.
+- **Tests:** a Swift Testing suite (runs on macOS and the iOS Simulator), plus a demo app with a UI walkthrough test.
+
+## Requirements
+
+|       |                                                                         |
+| ----- | ----------------------------------------------------------------------- |
+| iOS   | 17.0+ (macOS 14+: request capture only, no inspector UI)                |
+| Xcode | 26 or later                                                             |
+| Swift | 6.2+ (tools version) — your app can still use the Swift 5 language mode |
+
+### Older iOS versions
+
+Older releases keep working. Pick the one that matches your app's minimum deployment target:
+
+| netfox | Minimum iOS | Swift Package Manager |
+|---|---|---|
+| **4.x** | iOS 17 | `.package(url: "https://github.com/azimxxm/netfox-ios", from: "4.0.0")` |
+| 3.0.0 | iOS 15 | `.package(url: "https://github.com/azimxxm/netfox-ios", .upToNextMajor(from: "3.0.0"))` |
+| 2.1.0 | iOS 12 | `.package(url: "https://github.com/azimxxm/netfox-ios", .upToNextMajor(from: "2.0.0"))` |
+
+`from: "3.0.0"` means 3.0.0 up to (but not including) 4.0.0, so existing apps are never moved to 4.x automatically.
 
 ## Installation
 
-### Swift Package Manager (Recommended)
+### Swift Package Manager
 
-Add `netfox` as a package dependency in Xcode:
-
-`File > Add Packages` → enter repository URL:
+In Xcode: **File ▸ Add Package Dependencies…** and enter:
 
 ```
 https://github.com/azimxxm/netfox-ios
 ```
 
-Or add to your `Package.swift`:
+Or in `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/azimxxm/netfox-ios", from: "2.0.0")
+    .package(url: "https://github.com/azimxxm/netfox-ios", from: "4.0.0")
 ]
 ```
 
-### Manually
+## Setup
 
-Copy the `netfox/` folder into your project. Keep `Core/` and `iOS/` folders, remove `OSX/`.
+Start netfox as early as possible, and only in debug builds.
 
-## Quick Start
-
-### UIKit (AppDelegate)
+### SwiftUI
 
 ```swift
-// AppDelegate.swift
-import netfox
-
-func application(_ application: UIApplication,
-                 didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-    #if DEBUG
-    NFX.sharedInstance().start()
-    #endif
-    return true
-}
-```
-
-### SwiftUI (App lifecycle)
-
-```swift
-// YourApp.swift
 import SwiftUI
 import netfox
 
@@ -85,139 +108,177 @@ import netfox
 struct YourApp: App {
     init() {
         #if DEBUG
-        NFX.sharedInstance().start()
+        NFX.shared.start()
         #endif
     }
 
     var body: some Scene {
-        WindowGroup {
-            ContentView()
-        }
+        WindowGroup { ContentView() }
     }
 }
 ```
 
-If you need to show/hide netfox manually in SwiftUI (with `.custom` gesture):
+### UIKit
 
 ```swift
-// Example: toggle with a button
-Button("Network Logs") {
-    NFX.sharedInstance().show()
+import UIKit
+import netfox
+
+func application(_ application: UIApplication,
+                 didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+    #if DEBUG
+    NFX.shared.start()
+    #endif
+    return true
 }
 ```
 
-Or present on a specific view controller from SwiftUI:
+**That's it.** Shake the device to open the inspector (in the Simulator: **Device ▸ Shake**, or ⌃⌘Z), and shake again to close it.
 
-```swift
-struct NetfoxButton: UIViewControllerRepresentable {
-    func makeUIViewController(context: Context) -> UIViewController {
-        return UIViewController()
-    }
-
-    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
-
-    static func show(from vc: UIViewController) {
-        NFX.sharedInstance().show(on: vc)
-    }
-}
-```
-
-**That's it.** Shake your device to open the network inspector. Shake again to dismiss.
-
-> Always wrap with `#if DEBUG` to prevent execution in production builds. Add `-DDEBUG` in Build Settings → Swift Compiler → Other Swift Flags (Debug configuration).
+> Keep netfox behind `#if DEBUG`. It intercepts every request your app sends and stores the bodies on disk. Xcode defines `DEBUG` for the Debug configuration of new projects, so no build setting is needed.
 
 ## Usage
 
-### Custom Gesture
-
-If you prefer not to use shake:
+### Open and close the inspector yourself
 
 ```swift
-NFX.sharedInstance().setGesture(.custom)
+NFX.shared.setGesture(.custom)   // turn off the shake gesture
 
-// Show manually
-NFX.sharedInstance().show()
+NFX.shared.show()
+NFX.shared.hide()
+NFX.shared.toggle()
 
-// Hide manually
-NFX.sharedInstance().hide()
-
-// Toggle
-NFX.sharedInstance().toggle()
+NFX.shared.show(on: someViewController)   // present from a specific view controller
 ```
 
-### Show on Specific View Controller
-
-```swift
-NFX.sharedInstance().show(on: myViewController)
-```
+All `NFX` methods are thread-safe. `show()`, `hide()` and `toggle()` hop to the main thread when they need to.
 
 ### Ignore URLs
 
 ```swift
-// Ignore by prefix
-NFX.sharedInstance().ignoreURL("https://analytics.example.com")
-
-// Ignore multiple
-NFX.sharedInstance().ignoreURLs(["https://logs.example.com", "https://metrics.example.com"])
-
-// Ignore by regex
-NFX.sharedInstance().ignoreURLsWithRegex(".*\\.analytics\\..*")
+NFX.shared.ignoreURL("https://analytics.example.com")
+NFX.shared.ignoreURLs(["https://logs.example.com", "https://metrics.example.com"])
+NFX.shared.ignoreURLsWithRegex(#".*\.analytics\..*"#)   // an invalid pattern is logged and skipped
 ```
 
-### Stop & Clear
+### Log WebSocket messages
+
+`URLProtocol` can't see WebSocket frames, so log them yourself from your receive loop, from any thread:
 
 ```swift
-NFX.sharedInstance().stop()  // Stops logging and clears all data
+NFX.shared.logWebSocketText(message, direction: .received, url: socketURL)
+NFX.shared.logWebSocketData(data, direction: .sent, url: socketURL)
+NFX.shared.logWebSocketPing(direction: .sent, url: socketURL)
 ```
 
-### Session Logs
+### Session log, cache policy, stop
 
 ```swift
-if let logData = NFX.sharedInstance().getSessionLog() {
-    // Export or process log data
-}
-```
-
-### Cache Policy
-
-```swift
-NFX.sharedInstance().setCachePolicy(.returnCacheDataElseLoad)
+let log: Data? = NFX.shared.getSessionLog()          // plain-text log of this session
+NFX.shared.setCachePolicy(.allowedInMemoryOnly)      // default: .notAllowed
+NFX.shared.stop()                                    // stops capturing and clears the data
 ```
 
 ## Features
 
-- **Request List** — all captured requests with status indicators, method badges, and duration
-- **Search** — filter by URL, HTTP method, or response type
-- **Response Filters** — show only JSON, XML, HTML, Image, or Other responses
-- **Request Details** — headers, body, URL query parameters, timing info
-- **Response Details** — status, headers, body with JSON pretty-printing
-- **Copy as cURL** — one-tap copy of any request
-- **Share Logs** — share via system share sheet or email
-- **Statistics** — average response time, total data transferred
-- **Device Info** — IP address, OS version, screen resolution
-- **Dark Mode** — full support with dynamic colors
-- **Disk Storage** — request/response bodies stored on disk for low memory overhead
+<!-- GIF: assets/search-filter.gif, assets/detail-body.gif, assets/share-export.gif, assets/statistics.gif, assets/ipad-split.gif -->
 
-## Requirements
+- **Request list.**
+  - Each row shows a status dot, the method, the URL, duration, content type and size, with a dot on requests that are new since your last visit.
+  - Search by URL, method or type.
+  - Pin important requests (swipe right).
+  - Compare two requests (swipe left).
+  - Group requests by host.
+- **Filters** by status code (2xx/3xx/4xx/5xx) and by response type (JSON, XML, HTML, image, other).
+- **Request details.**
+  - **Info:** URL, method, status, dates, duration, timeout and cache policy, plus the timing timeline and the TLS certificate.
+  - **Request / Response:** headers (long-press to copy), query parameters and the body.
+- **Body viewer.**
+  - JSON syntax highlighting, with a Pretty / Raw switch and Find.
+  - Image preview.
+  - Binary bodies show their size and type and can be shared.
+- **Actions:**
+  - Copy as cURL.
+  - Replay a request.
+  - Share a single request's log.
+  - Share the whole session log.
+  - Export the session as a HAR file.
+- **Statistics:** charts by status class and content type, the duration distribution, and totals and averages.
+- **Device info:** app and OS versions, device model, screen. The public IP is looked up only when you tap the button.
+- **Settings:**
+  - turn capture on or off;
+  - console logging (each request in Xcode's console via `os.Logger`);
+  - TLS certificate capture;
+  - haptic feedback on each new request;
+  - split view on iPad.
+- **Dark mode and Dynamic Type.**
 
-- iOS 14.0+
-- Swift 5.9+
-- Xcode 15+
+## Demo app
 
-## Architecture
+`Example/NetfoxDemo.xcodeproj` is a small SwiftUI app with sample requests: JSON, POST and PATCH, images, HTML and XML, 404 and 500 responses, redirects, a slow request, an ephemeral session, a ~1 MB JSON file, a binary file and WebSocket messages.
 
-netfox works by registering a custom `URLProtocol` subclass (`NFXProtocol`) and swizzling `URLSessionConfiguration.default` and `.ephemeral` to inject it into every URLSession. This means it captures traffic from all networking libraries automatically — no integration code needed.
+1. Open it and run the **NetfoxDemo** scheme.
+2. Tap **Send all requests**.
+3. Shake the device.
+
+Launch arguments:
+
+| Argument        | What it does                                  |
+| --------------- | --------------------------------------------- |
+| `--send-all`    | Sends every sample request on launch          |
+| `--open-netfox` | Opens the inspector after the requests finish |
+
+`NetfoxDemoUITests` walks through every screen and attaches a screenshot of each one to the test result.
+
+## How it works
+
+netfox registers a `URLProtocol` subclass and swizzles `URLSessionConfiguration`, so every `URLSession`, including the ones created before `start()`, routes its requests through netfox.
+
+netfox re-sends each request on one shared internal session and passes every callback back to your app unchanged: the response, data, redirects and authentication challenges. Captured requests become immutable `Sendable` records. Their bodies are written to the app's temporary directory.
+
+The package has two targets:
+
+- **`NetfoxCore`** is the capture engine. It has no UI and does no work on the main thread.
+- **`netfox`** contains the public `NFX` API, the observable stores and the SwiftUI inspector.
+
+## Known limitations
+
+- **HTTP authentication.** Basic, Digest and NTLM challenges for intercepted requests get the system's default handling: your app gets the 401, and credentials in the URL still work. Forwarding these challenges to the app's own delegate makes the request hang on current iOS versions, so netfox doesn't. Server-trust (certificate pinning) and client-certificate challenges do reach your delegate.
+- **Cookies.** Cookies set on requests from an ephemeral session, or a session with its own cookie storage, end up in `HTTPCookieStorage.shared` while netfox is running.
+- **Refused redirects.** If your session delegate refuses a redirect, the task fails with error 3072 instead of returning the 3xx response.
+- **WebSocket and background sessions.** `URLProtocol` doesn't see WebSocket frames (log them with the WebSocket API above) or background `URLSession` transfers.
+
+## Migrating from 3.x
+
+- **Minimum versions:** iOS 17, and Xcode 26 / Swift tools 6.2.
+- **`NFX` is now `final` and thread-safe.**
+  - `NFX.shared` is new.
+  - `NFX.sharedInstance()` still works.
+  - Every other 3.x method keeps its name.
+- **No longer public:** `NFXProtocol`, `NFXHTTPModel` and `HTTPModelShortType` were internal details.
+- **macOS:** the old window UI, which was never shipped through SwiftPM, is gone. On macOS, netfox captures requests and `getSessionLog()` works.
+
+## Development
+
+```bash
+swift test                                   # unit and interception tests on macOS
+xcodebuild test -scheme netfox \
+  -destination 'platform=iOS Simulator,name=iPhone 17'              # the same tests on iOS
+xcodebuild test -project Example/NetfoxDemo.xcodeproj -scheme NetfoxDemo \
+  -destination 'platform=iOS Simulator,name=iPhone 17'              # UI walkthrough
+```
 
 ## Author
 
 **Azimjon Abdurasulov** — iOS Developer
+
 - Website: [azimjondev.uz](https://azimjondev.uz)
 - GitHub: [@azimxxm](https://github.com/azimxxm)
 
 ## Credits
 
-Original library by [kasketis/netfox](https://github.com/kasketis/netfox). Special thanks to [tbaranes](https://github.com/tbaranes) and [vincedev](https://github.com/vincedev) for their OSX contributions.
+The original library is [kasketis/netfox](https://github.com/kasketis/netfox). Thanks to [tbaranes](https://github.com/tbaranes) and [vincedev](https://github.com/vincedev) for their earlier macOS contributions.
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT. See [LICENSE](LICENSE).
